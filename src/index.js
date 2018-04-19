@@ -1,61 +1,75 @@
 const csv = require('javascript-csv')
 const {createWriteStream, readFileSync} = require('fs')
-const {join: joinPath, resolve: resolvePath} = require('path')
+const {join: joinPath} = require('path')
 const request = require('request')
 const {parallelLimit, retry} = require('async')
 const template = require('lodash.template')
 
-// TODO: retrieve from CLI args
-const CSV_PATH = resolvePath(__dirname, '..', 'config', 'BBCSoundEffects.csv')
-const DOWNLOAD_PATH = resolvePath(__dirname, '..', 'downloads')
-const START_INDEX = 1120
-const BATCH_SIZE = 10
-const RETRY_NUM = 5
-const FILENAME_FORMAT = '<%=CDNumber%>.<%=tracknum%>.<%=description%>.<%=location%>'
-const URL_FORMAT = 'http://bbcsfx.acropolis.org.uk/assets/<%=location%>'
-
-const filenameTemplate = template(FILENAME_FORMAT)
-const urlTemplate = template(URL_FORMAT)
-const data = csv.toArrays(readFileSync(CSV_PATH).toString())
-const headers = data.shift()
-
-const createDownloadStream = (url, filename) => (callback) => {
+const createDownload = (url, filename) => (callback) => {
   request(url)
     .on('error', callback)
     .pipe(createWriteStream(filename).on('error', callback))
     .on('finish', callback)
 }
 
-const createDownload = (data, index) => (callback) => {
-  const line = data.reduce(
-    (line, val, index) => ({
-      ...line,
-      [headers[index]]: val
-    }),
-    {}
-  )
+class Downloader {
+  constructor ({
+    csvPath,
+    downloadPath,
+    startIndex = 0,
+    endIndex = Infinity,
+    batchSize = 10,
+    retryNum = 5,
+    filenameFormat,
+    urlFormat
+  } = {}) {
+    this.downloadPath = downloadPath
+    this.startIndex = startIndex
+    this.batchSize = batchSize
+    this.retryNum = retryNum
+    this.filenameTemplate = template(filenameFormat)
+    this.urlTemplate = template(urlFormat)
+    this.data = csv.toArrays(readFileSync(csvPath).toString())
+    this.endIndex = endIndex
+    this.headers = this.data.shift()
+    this.createDownload = this.createDownload.bind(this)
+  }
 
-  const url = urlTemplate(line)
-  const filename = joinPath(DOWNLOAD_PATH, filenameTemplate(line))
+  createDownload (data, index) {
+    return (callback) => {
+      const line = data.reduce(
+        (line, val, index) => ({
+          ...line,
+          [this.headers[index]]: val
+        }),
+        {}
+      )
 
-  console.log(`downloading ${url}`)
+      const url = this.urlTemplate(line)
+      const filename = joinPath(this.downloadPath, this.filenameTemplate(line))
 
-  retry(RETRY_NUM, createDownloadStream(url, filename), err => {
-    if (err) {
-      console.log(`Failed to download ${url}`)
-      console.log(`Continue from index ${START_INDEX + index}`)
-    }
+      console.log(`downloading ${url}`)
 
-    callback(err)
-  })
-}
+      retry(this.retryNum, createDownload(url, filename), err => {
+        if (err) {
+          console.log(`Failed to download ${url}`)
+          console.log(`Continue from index ${this.startIndex + index}`)
+        }
 
-parallelLimit(
-  data.slice(START_INDEX).map(createDownload),
-  BATCH_SIZE,
-  (err) => {
-    if (!err) {
-      console.log('finished')
+        callback(err)
+      })
     }
   }
-)
+
+  run () {
+    return new Promise((resolve, reject) => {
+      parallelLimit(
+        this.data.slice(this.startIndex, this.endIndex).map(this.createDownload),
+        this.batchSize,
+        (err) => err ? reject(err) : resolve()
+      )
+    })
+  }
+}
+
+module.exports = Downloader
