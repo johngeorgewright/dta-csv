@@ -1,6 +1,6 @@
 const csv = require('javascript-csv')
 const {createWriteStream, readFileSync} = require('fs')
-const {join: joinPath} = require('path')
+const {join: joinPath, resolve: resolvePath} = require('path')
 const request = require('request')
 const {parallelLimit, retry} = require('async')
 const template = require('lodash.template')
@@ -15,7 +15,7 @@ const createDownload = (url, filename) => (callback) => {
 class Downloader {
   constructor ({
     csvPath,
-    downloadPath,
+    downloadPath = resolvePath(__dirname, '..', 'downloads'),
     startIndex = 0,
     endIndex = Infinity,
     batchSize = 10,
@@ -53,10 +53,9 @@ class Downloader {
       retry(this.retryNum, createDownload(url, filename), err => {
         if (err) {
           console.log(`Failed to download ${url}`)
-          console.log(`Continue from index ${this.startIndex + index}`)
         }
 
-        callback(err)
+        callback(err, this.startIndex + index)
       })
     }
   }
@@ -66,7 +65,14 @@ class Downloader {
       parallelLimit(
         this.data.slice(this.startIndex, this.endIndex).map(this.createDownload),
         this.batchSize,
-        (err) => err ? reject(err) : resolve()
+        (err, responses) => {
+          if (err) {
+            console.log(`--> Try again from index ${Math.min(...responses)}`)
+            return reject(err)
+          }
+
+          resolve()
+        }
       )
     })
   }
